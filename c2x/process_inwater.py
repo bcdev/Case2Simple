@@ -1,54 +1,52 @@
 import os
 import sys
-import numpy as np
 
-from c2x import Supported_Sensors
+import numpy as np
+from snappy import (File, Product, ProductIO, ProductUtils)
+
+from c2x import *
+
 
 # Maybe add snappy to you python path
 # sys.path.append('/home/user/.snap/snap-python/')
 
-from snappy import File
-from snappy import Product
-from snappy import ProductIO
-from snappy import ProductUtils
-from snappy import jpy
-
-Color = jpy.get_type('java.awt.Color')
+# Eventually set log level to debug
+c2x_log.setLevel(logging.DEBUG)
 
 
-def process_product(file, Sensor):
+def process_product(file, sensor):
     in_product = ProductIO.readProduct(file)
     width = in_product.getSceneRasterWidth()
     height = in_product.getSceneRasterHeight()
     in_name = in_product.getName()
     in_description = in_product.getDescription()
     in_band_names = in_product.getBandNames()
-    size = in_product.getSceneRasterSize()
 
-
-    print("Product:     %s, %s" % (in_name, in_description))
-    print("Raster size: %d x %d pixels" % (width, height))
-    print("Start time:  " + str(in_product.getStartTime()))
-    print("End time:    " + str(in_product.getEndTime()))
-    print("Bands:       %s" % (list(in_band_names)))
-    print(size)
+    c2x_log.info("Product:     %s, %s" % (in_name, in_description))
+    c2x_log.debug("Raster size: %d x %d pixels" % (width, height))
+    c2x_log.debug("Start time:  " + str(in_product.getStartTime()))
+    c2x_log.debug("End time:    " + str(in_product.getEndTime()))
+    c2x_log.debug("Bands:       %s" % (list(in_band_names)))
 
     # Output product Definition
     # 1. define the target product and its file format
-    c2x_product = Product('C2X', 'C2X', width, height)
+    c2x_product = Product('%s_%s' % (in_name, PRODUCT_TYPE), '%s' % PRODUCT_TYPE, width, height)
     writer = ProductIO.getProductWriter('BEAM-DIMAP')
     c2x_product.setProductWriter(writer)
     fpath = in_product.getFileLocation().getAbsolutePath()
     fpath = os.path.split(fpath)[0] + "/out/" + os.path.split(fpath)[1]
     fpath = fpath.split(".")[0]
-    fpath = fpath + "_InWater.dim"
+    fpath = "{0}_{1}.dim".format(fpath, PRODUCT_TYPE.lower())
     c2x_product.setFileLocation(File(fpath))
 
-    # 2. define the bands for the results of the different algorithms
-    outbands = {}
-    for cnt in range(len(Sensor["outputs"])):
-        outbands[Sensor["outputs"][cnt][0]] = c2x_product.addBand(Sensor["outputs"][cnt][0], Sensor["outputs"][cnt][1])
+    sensor_outputs = sensor["outputs"]
+    sensor_wavelengths = sensor["wavelengths"]
 
+    # 2. define the bands for the results of the different algorithms
+    outbands = dict()
+    for cnt in range(len(sensor_outputs)):
+        cnt = sensor_outputs[cnt]
+        outbands[cnt[0]] = c2x_product.addBand(cnt[0], cnt[1])
 
     # 3. copy tie point grids from input product to target product
     ProductUtils.copyTiePointGrids(in_product, c2x_product)
@@ -56,28 +54,29 @@ def process_product(file, Sensor):
     ProductUtils.copyGeoCoding(in_product, c2x_product)
     ProductUtils.copyFlagBands(in_product, c2x_product, False)
 
-
     # 4. write the header to disk
     location = c2x_product.getFileLocation()
-    c2x_product.writeHeader(c2x_product.getFileLocation().toString())
-    writer.writeProductNodes(c2x_product, location)
+    c2x_product.writeHeader(location)
 
     # assigning aux arrays
     rhow_arrays = dict()
-    for wls in Sensor["wavelengths"]:
+    for wls in sensor_wavelengths:
         rhow_arrays[str(wls)] = np.zeros(width, dtype=np.float32)
 
     #  get all specified bands from input product
-    print("Processing %s with algos" % file)
-    [print(algo[0]) for algo in Sensor["outputs"]]
-    bsource = dict()
-    for i in range(len(Sensor["wavelengths"])):
-        bsource["band" + str(Sensor["wavelengths"][i])] = in_product.getBand(
-            Sensor["band" + str(Sensor["wavelengths"][i])])
+    c2x_log.info("Processing and writing to %s" % file)
+    algo_names = dict()
+    for cnt in range(len(sensor_outputs)):
+        algo_names[cnt] = sensor_outputs[cnt][0]
+    c2x_log.debug("Processing with following algos: %s " % list(algo_names.values()))
 
-    bands = in_product.getBands()
+    bsource = dict()
+    for i in range(len(sensor_wavelengths)):
+        band_name = create_source_band_name(sensor_wavelengths[i])
+        bsource[band_name] = in_product.getBand(sensor[band_name])
+
     flag_bands = []
-    for b in bands:
+    for b in in_product.getBands():
         if b.isFlagBand():
             flag_bands.append(b)
 
@@ -86,15 +85,15 @@ def process_product(file, Sensor):
     # loop through the product line by line and application of algorithms
     for y in range(height):
         rhow = dict()
-        for wl in Sensor["wavelengths"]:
-            source_band = bsource["band" + str(wl)]
+        for wl in sensor_wavelengths:
+            source_band = bsource[create_source_band_name(wl)]
             # dealing with no-data; setting no-data to to NaN
             invalidMask = read_invalid_mask(source_band, width, y)
             source_band.readPixels(0, y, width, 1, rhow_arrays[str(wl)])
             rhow["band" + str(wl)] = np.ma.array(rhow_arrays[str(wl)], mask=invalidMask, fill_value=np.nan)
-        for algo in range(len(Sensor["outputs"])):
-            res = Sensor["outputs"][algo][2](rhow, Sensor["outputs"][algo][4], Sensor["outputs"][algo][5])
-            name = Sensor["outputs"][algo][0]
+        for algo in range(len(sensor_outputs)):
+            res = sensor_outputs[algo][2](rhow, sensor_outputs[algo][4], sensor_outputs[algo][5])
+            name = sensor_outputs[algo][0]
             outbands[name].writePixels(0, y, width, 1, res)
         for fband in flag_bands:
             fband.readPixels(0, y, width, 1, flags_data)
@@ -105,6 +104,11 @@ def process_product(file, Sensor):
 
     print("Done.")
     return 0
+
+
+def create_source_band_name(wl):
+    return "band%d" % wl
+
 
 def read_invalid_mask(sourc_band, width, y):
     validMask = np.zeros(width, dtype=np.uint8)
@@ -120,6 +124,9 @@ if __name__ == '__main__':
 
     file = sys.argv[1]
     sensorName = sys.argv[2]
+
+    if not os.path.exists(file):
+        raise FileNotFoundError('Path \'%s\' does not exist' % file)
 
     useSensor = None
     for sensor in Supported_Sensors:

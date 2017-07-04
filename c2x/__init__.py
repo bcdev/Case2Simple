@@ -1,3 +1,4 @@
+import logging
 from snappy import ProductData
 
 from c2x.inwater_algorithms import cdom1_syke, cdom2_syke, tsm_syke, tsm_nechad_MERIS_665, tsm_nechad_MERIS_680, \
@@ -6,6 +7,10 @@ from c2x.inwater_algorithms import cdom1_syke, cdom2_syke, tsm_syke, tsm_nechad_
 #chl_zimba_1_meris, chl_zimba_2_meris, chl_gitelson_meris
 #OC3_meris, OC4_meris,chl_clark_meris,chl_gons
 
+c2x_log = logging.getLogger(__name__)
+c2x_log.setLevel(logging.INFO)
+
+PRODUCT_TYPE = 'C2X'
 
 MERIS = {
     "Name": "MERIS",
